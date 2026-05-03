@@ -1,0 +1,114 @@
+name: Build and Release App
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build H5
+        run: pnpm build:h5
+
+      - name: Build WeChat Mini Program
+        run: pnpm build:mp
+
+      - name: Build Android App
+        run: pnpm build:app-android
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ steps.get_version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+
+      - name: Find WGT file
+        id: find_wgt
+        run: |
+          WGT_FILE=$(find dist/build/app-plus -name "*.wgt" -type f | head -n 1)
+          echo "WGT_FILE=$WGT_FILE" >> $GITHUB_OUTPUT
+
+      - name: Find APK file
+        id: find_apk
+        run: |
+          APK_FILE=$(find dist/build/app-plus -name "*.apk" -type f | head -n 1)
+          echo "APK_FILE=$APK_FILE" >> $GITHUB_OUTPUT
+
+      - name: Upload WGT Asset
+        if: steps.find_wgt.outputs.WGT_FILE != ''
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ steps.find_wgt.outputs.WGT_FILE }}
+          asset_name: app-${{ steps.get_version.outputs.VERSION }}.wgt
+          asset_content_type: application/octet-stream
+
+      - name: Upload APK Asset
+        if: steps.find_apk.outputs.APK_FILE != ''
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ steps.find_apk.outputs.APK_FILE }}
+          asset_name: app-${{ steps.get_version.outputs.VERSION }}.apk
+          asset_content_type: application/vnd.android.package-archive
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          CHANGELOG=$(git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 HEAD^)..HEAD)
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Update Release with Changelog
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ steps.get_version.outputs.VERSION }}
+          body: |
+            ## 更新内容
+            ${{ steps.changelog.outputs.CHANGELOG }}
+
+            ## 下载说明
+            - `.wgt` 文件为热更新包，适用于已安装APP的用户
+            - `.apk` 文件为完整安装包，适用于新用户或需要整包更新的情况
+
+            ## 安装说明
+            1. 热更新：APP会自动检测并提示更新
+            2. 整包更新：下载APK文件后手动安装
+          draft: false
+          prerelease: false
